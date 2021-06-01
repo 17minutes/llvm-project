@@ -19,6 +19,7 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/Analysis/CallGraphSCCPass.h"
+#include "llvm/Analysis/FunctionPropertiesAnalysis.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/Frontend/OpenMP/OMPConstants.h"
@@ -515,12 +516,15 @@ struct OpenMPOpt {
 
   using OptimizationRemarkGetter =
       function_ref<OptimizationRemarkEmitter &(Function *)>;
+  using FunctionInfoGetter =
+      function_ref<FunctionPropertiesInfo &(Function *)>;
 
   OpenMPOpt(SmallVectorImpl<Function *> &SCC, CallGraphUpdater &CGUpdater,
-            OptimizationRemarkGetter OREGetter,
+            OptimizationRemarkGetter OREGetter, FunctionInfoGetter FPAGetter,
             OMPInformationCache &OMPInfoCache, Attributor &A)
       : M(*(*SCC.begin())->getParent()), SCC(SCC), CGUpdater(CGUpdater),
-        OREGetter(OREGetter), OMPInfoCache(OMPInfoCache), A(A) {}
+        OREGetter(OREGetter), FPAGetter(FPAGetter),
+        OMPInfoCache(OMPInfoCache), A(A) {}
 
   /// Check if any remarks are enabled for openmp-opt
   bool remarksEnabled() {
@@ -566,6 +570,17 @@ struct OpenMPOpt {
           deduplicateRuntimeCalls();
           Changed = true;
         }
+      }
+
+      // TODO Just trying to output the analysis result, this should actually be a separate function
+      for (Function *F : SCC) {
+        if (!OMPInfoCache.Kernels.count(F))
+          continue;
+
+        auto functionInfo = FPAGetter(F);
+        LLVM_DEBUG(functionInfo.print(
+            dbgs() << TAG << " " << "FunctionPropertiesInfo for kernel "
+                   << F->getName() << "\n***\n"));
       }
     }
 
@@ -1588,6 +1603,9 @@ private:
   /// Callback to get an OptimizationRemarkEmitter from a Function *
   OptimizationRemarkGetter OREGetter;
 
+  /// Callback to get an FunctionPropertiesInfo from a Function *
+  FunctionInfoGetter FPAGetter;
+
   /// OpenMP-specific information cache. Also Used for Attributor runs.
   OMPInformationCache &OMPInfoCache;
 
@@ -2478,6 +2496,9 @@ PreservedAnalyses OpenMPOptPass::run(Module &M, ModuleAnalysisManager &AM) {
   auto OREGetter = [&FAM](Function *F) -> OptimizationRemarkEmitter & {
     return FAM.getResult<OptimizationRemarkEmitterAnalysis>(*F);
   };
+  auto FPAGetter = [&FAM](Function *F) -> FunctionPropertiesInfo & {
+    return FAM.getResult<FunctionPropertiesAnalysis>(*F);
+  };
 
   BumpPtrAllocator Allocator;
   CallGraphUpdater CGUpdater;
@@ -2488,7 +2509,7 @@ PreservedAnalyses OpenMPOptPass::run(Module &M, ModuleAnalysisManager &AM) {
 
   Attributor A(Functions, InfoCache, CGUpdater);
 
-  OpenMPOpt OMPOpt(SCC, CGUpdater, OREGetter, InfoCache, A);
+  OpenMPOpt OMPOpt(SCC, CGUpdater, OREGetter, FPAGetter, InfoCache, A);
   bool Changed = OMPOpt.run(true);
   if (Changed)
     return PreservedAnalyses::none();
@@ -2532,6 +2553,9 @@ PreservedAnalyses OpenMPOptCGSCCPass::run(LazyCallGraph::SCC &C,
   auto OREGetter = [&FAM](Function *F) -> OptimizationRemarkEmitter & {
     return FAM.getResult<OptimizationRemarkEmitterAnalysis>(*F);
   };
+  auto FPAGetter = [&FAM](Function *F) -> FunctionPropertiesInfo & {
+    return FAM.getResult<FunctionPropertiesAnalysis>(*F);
+  };
 
   BumpPtrAllocator Allocator;
   CallGraphUpdater CGUpdater;
@@ -2543,7 +2567,7 @@ PreservedAnalyses OpenMPOptCGSCCPass::run(LazyCallGraph::SCC &C,
 
   Attributor A(Functions, InfoCache, CGUpdater, nullptr, false);
 
-  OpenMPOpt OMPOpt(SCC, CGUpdater, OREGetter, InfoCache, A);
+  OpenMPOpt OMPOpt(SCC, CGUpdater, OREGetter, FPAGetter, InfoCache, A);
   bool Changed = OMPOpt.run(false);
   if (Changed)
     return PreservedAnalyses::none();
@@ -2609,6 +2633,12 @@ struct OpenMPOptCGSCCLegacyPass : public CallGraphSCCPass {
         ORE = std::make_unique<OptimizationRemarkEmitter>(F);
       return *ORE;
     };
+    // TODO No FAM here, what should we do? :)
+    auto FPAGetter = [](Function *F) -> FunctionPropertiesInfo & {
+      FunctionPropertiesInfo Res;
+      LLVM_DEBUG(dbgs() << TAG << "oh no how did we get to this point?");
+      return Res;
+    };
 
     AnalysisGetter AG;
     SetVector<Function *> Functions(SCC.begin(), SCC.end());
@@ -2619,7 +2649,7 @@ struct OpenMPOptCGSCCLegacyPass : public CallGraphSCCPass {
 
     Attributor A(Functions, InfoCache, CGUpdater, nullptr, false);
 
-    OpenMPOpt OMPOpt(SCC, CGUpdater, OREGetter, InfoCache, A);
+    OpenMPOpt OMPOpt(SCC, CGUpdater, OREGetter, FPAGetter, InfoCache, A);
     return OMPOpt.run(false);
   }
 
