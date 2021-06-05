@@ -516,15 +516,11 @@ struct OpenMPOpt {
 
   using OptimizationRemarkGetter =
       function_ref<OptimizationRemarkEmitter &(Function *)>;
-  using FunctionInfoGetter =
-      function_ref<FunctionPropertiesInfo &(Function *)>;
 
   OpenMPOpt(SmallVectorImpl<Function *> &SCC, CallGraphUpdater &CGUpdater,
-            OptimizationRemarkGetter OREGetter, FunctionInfoGetter FPAGetter,
-            OMPInformationCache &OMPInfoCache, Attributor &A)
+            OptimizationRemarkGetter OREGetter, OMPInformationCache &OMPInfoCache, Attributor &A)
       : M(*(*SCC.begin())->getParent()), SCC(SCC), CGUpdater(CGUpdater),
-        OREGetter(OREGetter), FPAGetter(FPAGetter),
-        OMPInfoCache(OMPInfoCache), A(A) {}
+        OREGetter(OREGetter), OMPInfoCache(OMPInfoCache), A(A) {}
 
   /// Check if any remarks are enabled for openmp-opt
   bool remarksEnabled() {
@@ -572,16 +568,7 @@ struct OpenMPOpt {
         }
       }
 
-      // TODO Just trying to output the analysis result, this should actually be a separate function
-      for (Function *F : SCC) {
-        if (!OMPInfoCache.Kernels.count(F))
-          continue;
-
-        auto functionInfo = FPAGetter(F);
-        LLVM_DEBUG(functionInfo.print(
-            dbgs() << TAG << " " << "FunctionPropertiesInfo for kernel "
-                   << F->getName() << "\n***\n"));
-      }
+      Changed |= injectKernelFeatures();
     }
 
     return Changed;
@@ -1485,6 +1472,50 @@ private:
     return Changed;
   }
 
+  /// Inject the results of FunctionPropertiesAnalysis for each of the kernels
+
+  bool injectKernelFeatures() {
+    bool IsChanged = false;
+    for (Function *F : SCC) {
+      if (!OMPInfoCache.Kernels.count(F))
+        continue;
+
+      FunctionPropertiesInfo* FunctionInfo = OMPInfoCache.getAnalysisResultForFunction<FunctionPropertiesAnalysis>(*F);
+      if (FunctionInfo) {
+        // OMPInfoCache has returned the analysis result -- pack the feature values into the [* x i64] array
+        // and inject them as the constant global variable with the name '$KernelName.KernelFeatures'
+        IntegerType *FeatureType = Type::getInt64Ty(M.getContext());
+        ArrayRef<Constant *> FeatureArrayRef{
+            ConstantInt::get(FeatureType, FunctionInfo->BasicBlockCount),
+            ConstantInt::get(FeatureType,
+                             FunctionInfo->BlocksReachedFromConditionalInstruction),
+            ConstantInt::get(FeatureType,
+                             FunctionInfo->DirectCallsToDefinedFunctions),
+            ConstantInt::get(FeatureType, FunctionInfo->LoadInstCount),
+            ConstantInt::get(FeatureType, FunctionInfo->MaxLoopDepth),
+            ConstantInt::get(FeatureType, FunctionInfo->StoreInstCount),
+            ConstantInt::get(FeatureType, FunctionInfo->TopLevelLoopCount),
+            ConstantInt::get(FeatureType, FunctionInfo->Uses),
+        };
+        ArrayType *FeatureArrayType =
+            ArrayType::get(FeatureType, FeatureArrayRef.size());
+        Constant *FeatureArray =
+            ConstantArray::get(FeatureArrayType, FeatureArrayRef);
+        GlobalVariable *FeatureVector = new GlobalVariable(
+            M, FeatureArrayType, true, GlobalValue::PrivateLinkage,
+            FeatureArray, F->getName() + ".KernelFeatures");
+        IsChanged = true;
+        LLVM_DEBUG(FeatureArray->print(dbgs() << TAG << " Function info for kernel " << F->getName() << " is: "));
+        LLVM_DEBUG(dbgs() << "\n");
+      }
+      else {
+        // OMPInfoCache has not returned the analysis result -- notify the debug output and proceed to the next kernel
+        LLVM_DEBUG(dbgs() << TAG << " No valid function info received for kernel " << F->getName() << "\n");
+      }
+    }
+    return IsChanged;
+  }
+
   /// Collect arguments that represent the global thread id in \p GTIdArgs.
   void collectGlobalThreadIdArguments(SmallSetVector<Value *, 16> &GTIdArgs) {
     // TODO: Below we basically perform a fixpoint iteration with a pessimistic
@@ -1602,9 +1633,6 @@ private:
 
   /// Callback to get an OptimizationRemarkEmitter from a Function *
   OptimizationRemarkGetter OREGetter;
-
-  /// Callback to get an FunctionPropertiesInfo from a Function *
-  FunctionInfoGetter FPAGetter;
 
   /// OpenMP-specific information cache. Also Used for Attributor runs.
   OMPInformationCache &OMPInfoCache;
@@ -2496,9 +2524,6 @@ PreservedAnalyses OpenMPOptPass::run(Module &M, ModuleAnalysisManager &AM) {
   auto OREGetter = [&FAM](Function *F) -> OptimizationRemarkEmitter & {
     return FAM.getResult<OptimizationRemarkEmitterAnalysis>(*F);
   };
-  auto FPAGetter = [&FAM](Function *F) -> FunctionPropertiesInfo & {
-    return FAM.getResult<FunctionPropertiesAnalysis>(*F);
-  };
 
   BumpPtrAllocator Allocator;
   CallGraphUpdater CGUpdater;
@@ -2509,7 +2534,7 @@ PreservedAnalyses OpenMPOptPass::run(Module &M, ModuleAnalysisManager &AM) {
 
   Attributor A(Functions, InfoCache, CGUpdater);
 
-  OpenMPOpt OMPOpt(SCC, CGUpdater, OREGetter, FPAGetter, InfoCache, A);
+  OpenMPOpt OMPOpt(SCC, CGUpdater, OREGetter, InfoCache, A);
   bool Changed = OMPOpt.run(true);
   if (Changed)
     return PreservedAnalyses::none();
@@ -2553,9 +2578,6 @@ PreservedAnalyses OpenMPOptCGSCCPass::run(LazyCallGraph::SCC &C,
   auto OREGetter = [&FAM](Function *F) -> OptimizationRemarkEmitter & {
     return FAM.getResult<OptimizationRemarkEmitterAnalysis>(*F);
   };
-  auto FPAGetter = [&FAM](Function *F) -> FunctionPropertiesInfo & {
-    return FAM.getResult<FunctionPropertiesAnalysis>(*F);
-  };
 
   BumpPtrAllocator Allocator;
   CallGraphUpdater CGUpdater;
@@ -2567,7 +2589,7 @@ PreservedAnalyses OpenMPOptCGSCCPass::run(LazyCallGraph::SCC &C,
 
   Attributor A(Functions, InfoCache, CGUpdater, nullptr, false);
 
-  OpenMPOpt OMPOpt(SCC, CGUpdater, OREGetter, FPAGetter, InfoCache, A);
+  OpenMPOpt OMPOpt(SCC, CGUpdater, OREGetter, InfoCache, A);
   bool Changed = OMPOpt.run(false);
   if (Changed)
     return PreservedAnalyses::none();
@@ -2633,12 +2655,6 @@ struct OpenMPOptCGSCCLegacyPass : public CallGraphSCCPass {
         ORE = std::make_unique<OptimizationRemarkEmitter>(F);
       return *ORE;
     };
-    // TODO No FAM here, what should we do? :)
-    auto FPAGetter = [](Function *F) -> FunctionPropertiesInfo & {
-      FunctionPropertiesInfo Res;
-      LLVM_DEBUG(dbgs() << TAG << "oh no how did we get to this point?");
-      return Res;
-    };
 
     AnalysisGetter AG;
     SetVector<Function *> Functions(SCC.begin(), SCC.end());
@@ -2649,7 +2665,7 @@ struct OpenMPOptCGSCCLegacyPass : public CallGraphSCCPass {
 
     Attributor A(Functions, InfoCache, CGUpdater, nullptr, false);
 
-    OpenMPOpt OMPOpt(SCC, CGUpdater, OREGetter, FPAGetter, InfoCache, A);
+    OpenMPOpt OMPOpt(SCC, CGUpdater, OREGetter, InfoCache, A);
     return OMPOpt.run(false);
   }
 
