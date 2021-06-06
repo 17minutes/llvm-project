@@ -1473,7 +1473,6 @@ private:
   }
 
   /// Inject the results of FunctionPropertiesAnalysis for each of the kernels
-
   bool injectKernelFeatures() {
     bool IsChanged = false;
     for (Function *F : SCC) {
@@ -1502,7 +1501,7 @@ private:
         Constant *FeatureArray =
             ConstantArray::get(FeatureArrayType, FeatureArrayRef);
         GlobalVariable *FeatureVector = new GlobalVariable(
-            M, FeatureArrayType, true, GlobalValue::PrivateLinkage,
+            M, FeatureArrayType, true, GlobalValue::InternalLinkage,
             FeatureArray, F->getName() + ".KernelFeatures");
         IsChanged = true;
         LLVM_DEBUG(FeatureArray->print(dbgs() << TAG << " Function info for kernel " << F->getName() << " is: "));
