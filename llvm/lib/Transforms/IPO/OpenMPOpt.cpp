@@ -1501,7 +1501,7 @@ private:
         Constant *FeatureArray =
             ConstantArray::get(FeatureArrayType, FeatureArrayRef);
         GlobalVariable *FeatureVector = new GlobalVariable(
-            M, FeatureArrayType, true, GlobalValue::InternalLinkage,
+            M, FeatureArrayType, true, GlobalValue::ExternalLinkage,
             FeatureArray, F->getName() + ".KernelFeatures");
         IsChanged = true;
         LLVM_DEBUG(FeatureArray->print(dbgs() << TAG << " Function info for kernel " << F->getName() << " is: "));

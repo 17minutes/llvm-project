@@ -1,9 +1,9 @@
 ; RUN: opt -passes=openmp-opt-cgscc -S < %s | FileCheck %s
 
-; CHECK-DAG: @empty_kernel1.KernelFeatures = internal constant [8 x i64] [i64 1, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 1]
-; CHECK-DAG: @empty_kernel2.KernelFeatures = internal constant [8 x i64] [i64 1, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 1]
-; CHECK-DAG: @matmul_kernel.KernelFeatures = internal constant [8 x i64] [i64 1, i64 0, i64 1, i64 0, i64 0, i64 1, i64 0, i64 1]
-; CHECK-DAG: @multiply_kernel.KernelFeatures = internal constant [8 x i64] [i64 13, i64 6, i64 0, i64 21, i64 3, i64 11, i64 1, i64 2]
+; CHECK-DAG: @empty_kernel1.KernelFeatures = constant [8 x i64] [i64 1, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 1]
+; CHECK-DAG: @empty_kernel2.KernelFeatures = constant [8 x i64] [i64 1, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 1]
+; CHECK-DAG: @matmul_kernel.KernelFeatures = constant [8 x i64] [i64 1, i64 0, i64 1, i64 0, i64 0, i64 1, i64 0, i64 1]
+; CHECK-DAG: @multiply_kernel.KernelFeatures = constant [8 x i64] [i64 13, i64 6, i64 0, i64 21, i64 3, i64 11, i64 1, i64 2]
 
 define void @empty_kernel1() {
   ret void
