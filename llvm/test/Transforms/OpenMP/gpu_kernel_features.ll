@@ -1,4 +1,4 @@
-; RUN: opt -passes=openmp-opt-cgscc -S < %s | FileCheck %s
+; RUN: opt -passes=openmp-opt-cgscc -openmp-inject-kernel-features -S < %s | FileCheck %s
 
 ; CHECK-DAG: @empty_kernel1.KernelFeatures = constant [8 x i64] [i64 1, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 1]
 ; CHECK-DAG: @empty_kernel2.KernelFeatures = constant [8 x i64] [i64 1, i64 0, i64 0, i64 0, i64 0, i64 0, i64 0, i64 1]

@@ -50,6 +50,12 @@ static cl::opt<bool> EnableParallelRegionMerging(
     cl::desc("Enable the OpenMP region merging optimization."), cl::Hidden,
     cl::init(false));
 
+static cl::opt<bool> InjectKernelFeatures(
+    "openmp-inject-kernel-features", cl::ZeroOrMore,
+    cl::desc("Inject the features of the kernel functions into the IR "
+             "as global variables."), cl::Hidden,
+    cl::init(false));
+
 static cl::opt<bool> PrintICVValues("openmp-print-icv-values", cl::init(false),
                                     cl::Hidden);
 static cl::opt<bool> PrintOpenMPKernels("openmp-print-gpu-kernels",
@@ -518,7 +524,8 @@ struct OpenMPOpt {
       function_ref<OptimizationRemarkEmitter &(Function *)>;
 
   OpenMPOpt(SmallVectorImpl<Function *> &SCC, CallGraphUpdater &CGUpdater,
-            OptimizationRemarkGetter OREGetter, OMPInformationCache &OMPInfoCache, Attributor &A)
+            OptimizationRemarkGetter OREGetter,
+            OMPInformationCache &OMPInfoCache, Attributor &A)
       : M(*(*SCC.begin())->getParent()), SCC(SCC), CGUpdater(CGUpdater),
         OREGetter(OREGetter), OMPInfoCache(OMPInfoCache), A(A) {}
 
@@ -568,7 +575,8 @@ struct OpenMPOpt {
         }
       }
 
-      Changed |= injectKernelFeatures();
+      if (InjectKernelFeatures)
+        Changed |= injectKernelFeatures();
     }
 
     return Changed;
@@ -1479,15 +1487,26 @@ private:
       if (!OMPInfoCache.Kernels.count(F))
         continue;
 
-      FunctionPropertiesInfo* FunctionInfo = OMPInfoCache.getAnalysisResultForFunction<FunctionPropertiesAnalysis>(*F);
-      if (FunctionInfo) {
-        // OMPInfoCache has returned the analysis result -- pack the feature values into the [* x i64] array
-        // and inject them as the constant global variable with the name '$KernelName.KernelFeatures'
+      FunctionPropertiesInfo *FunctionInfo =
+          OMPInfoCache.getAnalysisResultForFunction<FunctionPropertiesAnalysis>(
+              *F);
+      if (!FunctionInfo) {
+        // OMPInfoCache has not returned the analysis result -- notify the debug
+        // output and proceed to the next kernel
+        LLVM_DEBUG(dbgs() << TAG
+                          << " No valid function info received for kernel "
+                          << F->getName() << "\n");
+        continue;
+      } else {
+        // OMPInfoCache has returned the analysis result -- pack the feature
+        // values into the [* x i64] array and inject them as the constant
+        // global variable with the name '$KernelName.KernelFeatures'
         IntegerType *FeatureType = Type::getInt64Ty(M.getContext());
         ArrayRef<Constant *> FeatureArrayRef{
             ConstantInt::get(FeatureType, FunctionInfo->BasicBlockCount),
-            ConstantInt::get(FeatureType,
-                             FunctionInfo->BlocksReachedFromConditionalInstruction),
+            ConstantInt::get(
+                FeatureType,
+                FunctionInfo->BlocksReachedFromConditionalInstruction),
             ConstantInt::get(FeatureType,
                              FunctionInfo->DirectCallsToDefinedFunctions),
             ConstantInt::get(FeatureType, FunctionInfo->LoadInstCount),
@@ -1504,12 +1523,11 @@ private:
             M, FeatureArrayType, true, GlobalValue::ExternalLinkage,
             FeatureArray, F->getName() + ".KernelFeatures");
         IsChanged = true;
-        LLVM_DEBUG(FeatureArray->print(dbgs() << TAG << " Function info for kernel " << F->getName() << " is: "));
-        LLVM_DEBUG(dbgs() << "\n");
-      }
-      else {
-        // OMPInfoCache has not returned the analysis result -- notify the debug output and proceed to the next kernel
-        LLVM_DEBUG(dbgs() << TAG << " No valid function info received for kernel " << F->getName() << "\n");
+        LLVM_DEBUG({
+          FeatureArray->print(dbgs() << TAG << " Function info for kernel "
+                                     << F->getName() << " is: ");
+          dbgs() << "\n";
+        });
       }
     }
     return IsChanged;
